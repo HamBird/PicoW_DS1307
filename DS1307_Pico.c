@@ -338,13 +338,13 @@ void SSD1306_Render() {
 }
 
 /// @brief Clears all written bit (chars) on OLED
-static void SSD1306_Clear() {
+void SSD1306_Clear() {
     // zero the entire display
     memset(dispBuff, 0, SSD1306_BUFLEN);
     SSD1306_Render();
 }
 
-
+// The Code Below is For The DS1307 RTC
 static uint8_t DS1307_ADDR = 0x68;
 
 const uint8_t DS1307_CLOCK_SEC = 0x00;
@@ -356,9 +356,7 @@ const uint8_t DS1307_CLOCK_MNTH = 0x05;
 const uint8_t DS1307_CLOCK_YRS = 0x06;
 const uint8_t DS1307_CLOCK_CNTRL = 0x07;
 
-#define DS1307_HRS_TOGGLE_MASK 0x40
-
-static void DS1307_ReadClockSecs(char* strBuf) {
+void DS1307_ReadClockSecs(char* strBuf) {
     uint8_t buf[1];
     char* timeDesignation[2] = {"AM", "PM"};
 
@@ -402,7 +400,7 @@ static void DS1307_ReadClockSecs(char* strBuf) {
     }
 }
 
-static void DS1307_ReadClock(char* strBuf) {
+void DS1307_ReadClock(char* strBuf) {
     uint8_t buf[1];
     char* timeDesignation[2] = {"AM", "PM"};
 
@@ -442,26 +440,91 @@ static void DS1307_ReadClock(char* strBuf) {
 }
 
 /// @brief Sets the DS1307 Hour mode to either 12 Hour or 24 Hour
-/// @param mode 0 determines 12 hr mode, 1 is 24 hr mode
-static void DS1307_SetHour_Mode(bool mode) {
+/// @param mode false determines 12 hr mode, true is 24 hr mode
+void DS1307_SetHour_Mode(bool mode) {
     uint8_t buf[1];
 
     i2c_write_blocking(i2c0, DS1307_ADDR, &DS1307_CLOCK_HRS, 1, true);
     i2c_read_blocking(i2c0, DS1307_ADDR, buf, 1, false);
 
-    uint8_t tempByte = buf[0];
-    // desired mode is 24 Hour
-    if(mode) {
-        tempByte &= ~DS1307_HRS_TOGGLE_MASK;
-    }
-    // desired mode is 12 Hour
-    else {
-        tempByte |= DS1307_HRS_TOGGLE_MASK;
-    }
-    buf[0] = tempByte;
-    uint8_t hourMode[2] = { DS1307_CLOCK_HRS, buf[0] };
+    uint8_t hrDec = 0;
+    uint8_t hourByte;
 
-    i2c_write_blocking(i2c0, DS1307_ADDR, hourMode, 2, false);
+    // Desired mode is 24 hour
+    if(mode && (buf[0] & 0x40)) {
+        // checks if the clock is in PM
+        hrDec += (buf[0] & 0x20 && !(buf[0] & 0x12)) ? 12 : 0;
+        // checks if the clock has 10 hours
+        hrDec += (buf[0] & 0x10) ? 10 : 0;
+        // add the remaining "ones" hours
+        hrDec += buf[0] & 0x0F;
+        // reconstructs hour byte
+        hourByte = ((hrDec / 10) << 4) | (hrDec % 10);
+    }
+    else {
+        // adds the "tens" hours and the "ones" hours
+        hrDec = ((buf[0] & 0x30) >> 4) * 10 + buf[0] & 0x0F;
+
+        uint8_t hrMSB = (hrDec > 11) ? 2 : 0;
+        uint8_t hrLSB;
+
+        if(hrDec > 12) {
+            hrMSB += ((hrDec - 12) / 10) + 4;
+            hrLSB = (hrDec - 12) % 10;
+        }
+        else {
+            hrMSB += (hrDec / 10) + 4;
+            hrLSB = hrDec % 10;
+        }
+        hourByte = (hrMSB << 4) | hrLSB;
+    }
+    uint8_t writeData[2] = { DS1307_CLOCK_HRS, hourByte };
+    i2c_write_blocking(i2c0, DS1307_ADDR, writeData, 2, false);
+    
+}
+
+
+/// @brief Sets the DS1307 Clock to desired hour, minute and mode
+/// @param hour hours to write to clock (between 0 - 23)
+/// @param minute minutes to write to clock (between 0 - 59)
+/// @param mode desired mode the clock should operate in. (true = 24 hr, false = 12 hr)
+void DS1307_SetTime(uint16_t hour, uint16_t minute, bool mode) {
+    if(hour < 0 || hour > 23 || minute < 0 || minute > 59) 
+        return;
+    
+    uint8_t hourMSB;
+    uint8_t hourLSB;
+
+    // check what the desired mode is
+    switch (mode) {
+        // Clock is in 24 hour mode
+        case true:
+            hourMSB = (hour / 10);
+            hourLSB = (hour % 10);
+            break;    
+        // Clock is in 12 hour mode
+        case false:
+            // if the desired hour is over 12, compensate and add PM bit
+            hourMSB = (hour > 12) ? ((hour - 12) / 10) + 4 : (hour / 10) + 4;
+            hourMSB = (hour > 11) ? hourMSB + 2 : hourMSB;
+            hourLSB = (hour > 12) ? (hour - 12) % 10 : hour % 10;
+            break; 
+    }
+    // builds up the hour byte to send to register
+    uint8_t hourByte = ((hourMSB & 0x0F) << 4) | (hourLSB & 0x0F);
+    uint8_t writeData[2] = { DS1307_CLOCK_HRS,  hourByte };
+    i2c_write_blocking(i2c0, DS1307_ADDR, writeData, 2, false);
+
+    // builds up the minute byte to send to register
+    uint8_t minuteByte = (((minute / 10) & 0x0F) << 4) | ((minute % 10) & 0x0F);
+    writeData[0] = DS1307_CLOCK_MIN;
+    writeData[1] = minuteByte;
+    i2c_write_blocking(i2c0, DS1307_ADDR, writeData, 2, false);
+
+    // builds up the seconds byte set at 0 seconds to send to register
+    writeData[0] = DS1307_CLOCK_SEC;
+    writeData[1] = 0x00;
+    i2c_write_blocking(i2c0, DS1307_ADDR, writeData, 2, false);
 }
 
 
@@ -482,12 +545,19 @@ int main()
     gpio_pull_up(PICO_DEFAULT_I2C_SDA_PIN);
     gpio_pull_up(PICO_DEFAULT_I2C_SCL_PIN);
     
+    bool mode = false;
+
+    gpio_init(16);
+    gpio_set_dir(16, GPIO_IN);
+    gpio_pull_up(16);
+
 
     char buf[30];
     SSD1306_init();
     SSD1306_Clear();
 
-    DS1307_SetHour_Mode(true);
+    //DS1307_SetHour_Mode(true);
+    DS1307_SetTime(12, 59, mode);
     DS1307_ReadClock(buf);
     SSD1306_StringXY(0, 4, buf);
     SSD1306_Render();
@@ -497,8 +567,24 @@ int main()
     // Example to turn on the Pico W LED
     //cyw43_arch_gpio_put(CYW43_WL_GPIO_LED_PIN, 1);
 
+    bool isPressing = false;
     // DS1307_ReadClock();
     while (true) {
+        // Used to test the 24/12 modes
+        if(!gpio_get(16)) {
+            sleep_ms(50);
+            if(!gpio_get(16) && !isPressing) {
+                SSD1306_Clear();
+                SSD1306_StringXY(0, 5, "Pressing");
+                DS1307_SetHour_Mode(!mode);
+                mode = !mode;
+                isPressing = true;
+            }
+        }
+        else {
+            isPressing = false;
+            SSD1306_StringXY(0, 5, "        ");
+        }
         DS1307_ReadClockSecs(buf);
         SSD1306_StringXY(0, 0, buf);
         SSD1306_Render();
