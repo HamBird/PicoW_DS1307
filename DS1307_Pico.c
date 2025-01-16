@@ -356,6 +356,10 @@ const uint8_t DS1307_CLOCK_MNTH = 0x05;
 const uint8_t DS1307_CLOCK_YRS = 0x06;
 const uint8_t DS1307_CLOCK_CNTRL = 0x07;
 
+#define DS1307_CH_MASK 0x80
+
+/// @brief Reads the time from the clock in the format HH:MM:SS (PM/AM) based on the current mode
+/// @param strBuf user provided buffer to retrieve time
 void DS1307_ReadClockSecs(char* strBuf) {
     uint8_t buf[1];
     char* timeDesignation[2] = {"AM", "PM"};
@@ -378,7 +382,7 @@ void DS1307_ReadClockSecs(char* strBuf) {
     // breaks up the tens of minutes and ones minutes and adds them together
     minutes = ((buf[0] >> 4) * 10) + (buf[0] & 0x0F);
 
-    // retrieves the minutess byte
+    // retrieves the minutes byte
     i2c_write_blocking(i2c0, DS1307_ADDR, &DS1307_CLOCK_HRS, 1, true);
     i2c_read_blocking(i2c0, DS1307_ADDR, buf, 1, false);
 
@@ -400,6 +404,8 @@ void DS1307_ReadClockSecs(char* strBuf) {
     }
 }
 
+/// @brief Reads the time from the clock in the format HH:MM (PM/AM) based on the current mode
+/// @param strBuf user provided buffer to retrieve time
 void DS1307_ReadClock(char* strBuf) {
     uint8_t buf[1];
     char* timeDesignation[2] = {"AM", "PM"};
@@ -414,7 +420,7 @@ void DS1307_ReadClock(char* strBuf) {
     // breaks up the tens of minutes and ones minutes and adds them together
     minutes = ((buf[0] >> 4) * 10) + (buf[0] & 0x0F);
 
-    // retrieves the minutess byte
+    // retrieves the minutes byte
     i2c_write_blocking(i2c0, DS1307_ADDR, &DS1307_CLOCK_HRS, 1, true);
     i2c_read_blocking(i2c0, DS1307_ADDR, buf, 1, false);
 
@@ -426,17 +432,14 @@ void DS1307_ReadClock(char* strBuf) {
         hours = ((upper_hour & 0x1) * 10) + (buf[0] & 0x0F);
         uint8_t AMPM_Bit = (upper_hour & 0x2) ? 1 : 0;
 
-        sprintf(strBuf, "%02d:%02d:%02d %s", hours, minutes, timeDesignation[AMPM_Bit]);
+        sprintf(strBuf, "%02d:%02d %s", hours, minutes, timeDesignation[AMPM_Bit]);
     }
     // if not in 12 hour mode, assume 24 hour mode
     else {
         hours = ((upper_hour & 0x3) * 10) + (buf[0] & 0x0F);
         
-        sprintf(strBuf, "%02d:%02d:%02d", hours, minutes);
+        sprintf(strBuf, "%02d:%02d", hours, minutes);
     }
-
-    // debug line to check upper hour bits
-    //sprintf(strBuf, "Upper: %02d", upper_hour);
 }
 
 /// @brief Sets the DS1307 Hour mode to either 12 Hour or 24 Hour
@@ -461,9 +464,10 @@ void DS1307_SetHour_Mode(bool mode) {
         // reconstructs hour byte
         hourByte = ((hrDec / 10) << 4) | (hrDec % 10);
     }
+    // Desired mode is 12 hour
     else {
         // adds the "tens" hours and the "ones" hours
-        hrDec = ((buf[0] & 0x30) >> 4) * 10 + buf[0] & 0x0F;
+        hrDec = ((buf[0] >> 4) * 10) + (buf[0] & 0x0F);
 
         uint8_t hrMSB = (hrDec > 11) ? 2 : 0;
         uint8_t hrLSB;
@@ -482,7 +486,6 @@ void DS1307_SetHour_Mode(bool mode) {
     i2c_write_blocking(i2c0, DS1307_ADDR, writeData, 2, false);
     
 }
-
 
 /// @brief Sets the DS1307 Clock to desired hour, minute and mode
 /// @param hour hours to write to clock (between 0 - 23)
@@ -527,6 +530,133 @@ void DS1307_SetTime(uint16_t hour, uint16_t minute, bool mode) {
     i2c_write_blocking(i2c0, DS1307_ADDR, writeData, 2, false);
 }
 
+/// @brief Reads the day from the clock (Sun - Sat)
+/// @param strBuf user provided buffer to retrieve the current day
+void DS1307_ReadDay(char* strBuf) {
+    char* days[7] = {"Sunday", "Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday"};
+
+    uint8_t buf[1];
+
+    i2c_write_blocking(i2c0, DS1307_ADDR, &DS1307_CLOCK_DAY, 1, true);
+    i2c_read_blocking(i2c0, DS1307_ADDR, buf, 1, false);
+
+    sprintf(strBuf, "%s", days[buf[0] - 1]);
+}
+
+/// @brief Uses the desired day to set the DS1307 day (Sunday to Saturday)
+/// @param day the desired day to set (1 - 7)
+void DS1307_SetDay(uint8_t day) {
+    if(day < 1 || day > 7) 
+        return;
+
+    uint8_t writeData[2] = { DS1307_CLOCK_DAY, day };
+
+    i2c_write_blocking(i2c0, DS1307_ADDR, writeData, 2, false);
+}
+
+/// @brief Reads the date from the DS1307 in the format DD
+/// @param strBuf user provided buffer to retrieve the current date
+void DS1307_ReadDate(char* strBuf) {
+    uint8_t buf[1];
+
+    i2c_write_blocking(i2c0, DS1307_ADDR, &DS1307_CLOCK_DATE, 1, true);
+    i2c_read_blocking(i2c0, DS1307_ADDR, buf, 1, false);
+
+    uint8_t dateMSB = (buf[0] & 0x30) >> 4;
+    uint8_t dateLSB = (buf[0] & 0x0F);
+
+    sprintf(strBuf, "%02d", ((dateMSB * 10) + dateLSB));
+}
+
+/// @brief Uses the desired date to set the DS1307 date
+/// @param date the desired date to set (1 - 31)
+void DS1307_SetDate(uint8_t date) {
+    if(date < 1 || date > 31) 
+        return;
+    
+    uint8_t dateMSB = date / 10;
+    uint8_t dateLSB = date % 10;
+
+    uint8_t dateByte = (dateMSB << 4) | dateLSB;
+
+    uint8_t writeData[2] = { DS1307_CLOCK_DATE, dateByte };
+    i2c_write_blocking(i2c0, DS1307_ADDR, writeData, 2, false);
+}
+
+/// @brief Reads the current month from the DS1307 in either numerical or as a string
+/// @param strBuf user provided buffer to retrieve the current month
+/// @param readNumerical True = month in MM, False = month as "MTH"
+void DS1307_ReadMonth(char* strBuf, bool readNumerical) {
+    uint8_t buf[1];
+    char* months[12] = { "Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec" };
+
+    i2c_write_blocking(i2c0, DS1307_ADDR, &DS1307_CLOCK_MNTH, 1, true);
+    i2c_read_blocking(i2c0, DS1307_ADDR, buf, 1, false);
+
+    int8_t curMonth = (buf[0] >> 4) * 10 + (buf[0] & 0x0F); 
+    if(readNumerical) {
+        sprintf(strBuf, "%02d", curMonth);
+    }
+    else {
+        sprintf(strBuf, "%s", months[curMonth - 1]);
+    }
+}
+
+/// @brief Uses the desired month to set the month on the DS1307
+/// @param month The desired month to set (1 - 12)
+void DS1307_SetMonth(uint8_t month) {
+    if(month < 1 || month > 12)
+        return;
+
+    int8_t monthByte = ((month / 10) << 4) | (month % 10);
+    int8_t writeData[2] = { DS1307_CLOCK_MNTH, monthByte };
+
+    i2c_write_blocking(i2c0, DS1307_ADDR, writeData, 2, false);
+}
+
+/// @brief Reads the current year from the DS1307 in the format 20YY
+/// @param strBuf user provided buffer to retrieve the current year
+void DS1307_ReadYear(char* strBuf) {
+    uint8_t buf[1];
+
+    i2c_write_blocking(i2c0, DS1307_ADDR, &DS1307_CLOCK_YRS, 1, true);
+    i2c_read_blocking(i2c0, DS1307_ADDR, buf, 1, false);
+
+    int16_t curYear = ((buf[0] >> 4) * 10) + (buf[0] & 0x0F);
+    sprintf(strBuf, "%04d", (2000 + curYear));
+}
+
+/// @brief Uses the desired year to set the year on the DS1307
+/// @param year The desired year to set (0 - 99)
+void DS1307_SetYear(uint8_t year) {
+    if(year < 0 || year > 99)
+        return;
+
+    uint8_t yearByte = ((year / 10) << 4) | (year % 10);
+    uint8_t writeData[2] = { DS1307_CLOCK_YRS, yearByte };
+
+    i2c_write_blocking(i2c0, DS1307_ADDR, writeData, 2, false);
+}
+
+/// @brief Used to toggle the clock halt on the DS1307
+/// @param halt True = Halt the clock, False = Resume the clock
+void DS1307_ClockHalt(bool halt) {
+    uint8_t buf[1];
+
+    i2c_write_blocking(i2c0, DS1307_ADDR, &DS1307_CLOCK_SEC, 1, true);
+    i2c_read_blocking(i2c0, DS1307_ADDR, buf, 1, false);
+
+    uint8_t haltByte = buf[0];
+
+    if(halt) {
+        haltByte |= DS1307_CH_MASK;
+    }
+    else {
+        haltByte &= ~DS1307_CH_MASK;
+    }
+    uint8_t writeData[2] = { DS1307_CLOCK_SEC, haltByte };
+    i2c_write_blocking(i2c0, DS1307_ADDR, writeData, 2, false);
+}
 
 int main()
 {
@@ -556,17 +686,34 @@ int main()
     SSD1306_init();
     SSD1306_Clear();
 
-    //DS1307_SetHour_Mode(true);
-    DS1307_SetTime(12, 59, mode);
-    DS1307_ReadClock(buf);
-    SSD1306_StringXY(0, 4, buf);
-    SSD1306_Render();
+    // DS1307_SetTime(16, 36, mode);
+    // DS1307_SetDate(14);
+    // DS1307_SetDay(3);
+    // DS1307_SetMonth(1);
+    // DS1307_SetYear(25);
+
+
+    DS1307_ReadDate(buf);
+    SSD1306_StringXY(0, 3, "Date: ");
+    SSD1306_StringXY(6, 3, buf);
+
+    DS1307_ReadDay(buf);
+    SSD1306_StringXY(5, 4, buf);
+    SSD1306_StringXY(0, 4, "Day: ");
+    
+    DS1307_ReadMonth(buf, false);
+    SSD1306_StringXY(7, 6, buf);
+    SSD1306_StringXY(0, 6, "Month: ");
+
+    DS1307_ReadYear(buf);
+    SSD1306_StringXY(0, 7, "Year: ");
+    SSD1306_StringXY(6, 7, buf);
     // SSD1306_StringXY(0, 0, "Test");
-    // SSD1306_Render();
+    SSD1306_Render();
+
 
     // Example to turn on the Pico W LED
     //cyw43_arch_gpio_put(CYW43_WL_GPIO_LED_PIN, 1);
-
     bool isPressing = false;
     // DS1307_ReadClock();
     while (true) {
